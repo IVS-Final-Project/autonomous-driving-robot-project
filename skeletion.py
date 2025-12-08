@@ -7,7 +7,7 @@ stop_event = threading.Event()
 
 def getCurZoneTask(stop_flag: threading.Event, 추가로 인자들):
     while not stop_flag.is_set():
-        ZoneInfo = getCurZone(인자)
+        zoneInfo = getCurZone(인자)
         sleep(0.1)
 
 def getObjInfoTask(stop_flag: threading.Event, 추가로 인자들):
@@ -23,8 +23,8 @@ def mainTask(stop_flag: threading.Event, 추가로 인자들):
 
 def getCurZone(인자):
     # 여기 짜면 돼
-    ZoneInfo = 0
-    return ZoneInfo
+    zoneInfo = 0
+    return zoneInfo
 
 def getObjDetected(인자):
     # 여기 짜면 돼
@@ -49,12 +49,12 @@ if __name__ == "__main__":
     
     curZoneTaskThread = threading.Thread(인자들)
     
-    ObjInfoTaskThread = threading.Thread(인자들)
+    objInfoTaskThread = threading.Thread(인자들)
     
     mainTaskThread = threading.Thread(인자들)
     
     curZoneTaskThread.start()
-    ObjInfoTaskThread.start()
+    objInfoTaskThread.start()
     mainTaskThread.start()
     
     try:
