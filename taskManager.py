@@ -5,7 +5,7 @@ zoneID = {'IDLE' : 0, 'CHILD' : 1, 'HIGHACCIDENT' : 2, 'SPEEDBUMP' : 3}
 vel_ChildZone= 30 # 어린이 보호구역 목표 속도
 vel_HighAccidentZone = 50 # 사고다발지역 목표 속도
 vel_SpeedBump = 20 # 과속 방지턱 목표 속도
-vel_ObjInRoad = 10 # 도로 밖에서 장애물을 인식했을 때 목표 속도
+vel_ObjDetected = 10 # 도로 밖에서 장애물을 인식했을 때 목표 속도
 
 def getCurZoneTask(stop_event, args):
     while not stop_event.is_set():
@@ -29,7 +29,7 @@ def mainTask(stop_event, arg):
             if inRoad:
                 speed = 0
             else:
-                speed = vel_ObjInRoad
+                speed = vel_ObjDetected
         
         elif zone == zoneID['IDLE']:
             speed = globalVar.desiredSpeed
