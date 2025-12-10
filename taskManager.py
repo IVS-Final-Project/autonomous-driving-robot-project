@@ -29,14 +29,10 @@ COLLISION_X_MIN = 0.3
 COLLISION_X_MAX = 0.7
 
 # --- [ArUco Setup] ---
-# 1. Load Dictionary
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
-# 2. Setup Parameters
 aruco_params = cv2.aruco.DetectorParameters()
-# 3. Create Detector
 aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
 
-# Frame Counter for optimization
 frame_count = 0
 
 # --- [GStreamer Callback Function] ---
@@ -47,7 +43,7 @@ def app_callback(pad, info, user_data):
     if buffer is None:
         return Gst.PadProbeReturn.OK
 
-    # 1. Get Hailo Object Detection Results (Existing Logic)
+    # 1. Hailo Object Detection
     roi = hailo.get_roi_from_buffer(buffer)
     detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
 
@@ -68,49 +64,52 @@ def app_callback(pad, info, user_data):
                 stop_signal = True
                 break
 
-    # Update Object Status
     if stop_signal:
         globalVar.isObjInRoad = True
     else:
         globalVar.isObjInRoad = False
 
     # ---------------------------------------------------------
-    # 2. ArUco Marker Detection (Integrated Logic)
+    # 2. ArUco Marker Detection
     # ---------------------------------------------------------
-    # Run ArUco detection every 5 frames to save CPU
     frame_count += 1
+    # Run every 5 frames
     if frame_count % 5 == 0:
         
-        # Convert GStreamer Buffer to Numpy Array (Image)
         caps = pad.get_current_caps()
         w = caps.get_structure(0).get_value('width')
         h = caps.get_structure(0).get_value('height')
         
-        # Map buffer to read data
         success, map_info = buffer.map(Gst.MapFlags.READ)
         
         if success:
             try:
-                # Create numpy array from raw data (RGB format)
+                # GStreamer buffer (RGB) -> Numpy Array
                 image = np.ndarray(shape=(h, w, 3), dtype=np.uint8, buffer=map_info.data)
                 
+                # [FIX 1] Convert to Grayscale for better detection
+                gray_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                
+                # [DEBUG] Uncomment if needed (Check image shape)
+                # print(f"Checking ArUco... Shape: {gray_image.shape}")
+
                 # Detect Markers
-                corners, ids, rejected = aruco_detector.detectMarkers(image)
+                corners, ids, rejected = aruco_detector.detectMarkers(gray_image)
                 
                 if ids is not None:
-                    # Update Zone based on the first detected marker
                     found_id = ids.flatten()[0]
                     
                     if found_id in globalVar.ZONE_MAP:
                         new_zone = globalVar.ZONE_MAP[found_id]
-                        # Only print if zone changes
                         if globalVar.zoneInfo != new_zone:
-                            print(f"[ZONE UPDATE] Marker ID: {found_id} -> Zone: {new_zone}")
+                            print(f"!!! [ZONE CHANGE] Marker ID: {found_id} -> Zone: {new_zone} !!!")
                             globalVar.zoneInfo = new_zone
+                    else:
+                        print(f"[ArUco] Unknown Marker ID: {found_id}")
+
             except Exception as e:
                 print(f"ArUco Error: {e}")
             finally:
-                # Must unmap buffer
                 buffer.unmap(map_info)
 
     return Gst.PadProbeReturn.OK
@@ -120,10 +119,10 @@ def get_pipeline_string():
     hef_path = "/usr/local/hailo/resources/models/hailo8/yolov8m.hef"
     post_process_so = "/usr/local/hailo/resources/so/libyolo_hailortpp_postprocess.so"
     
+    # 소스: 640x640 RGB
     source_element = (
-        "libcamerasrc ! video/x-raw, format=RGB, width=640, height=480 ! "
-        "videoconvert ! "
-        "videoscale ! video/x-raw, format=RGB, width=640, height=640"
+        "libcamerasrc ! video/x-raw, format=RGB, width=640, height=640 ! "
+        "videoconvert"
     )
     
     pipeline_string = (
@@ -132,6 +131,10 @@ def get_pipeline_string():
         f'hailonet hef-path={hef_path} batch-size=1 ! '
         f'queue name=inference_output_q max-size-buffers=3 ! '
         f'hailofilter so-path={post_process_so} function-name=filter_letterbox qos=false ! '
+        
+        # [FIX] ArUco 인식을 위해 메모리 포맷을 확실하게 RGB로 변환
+        f'videoconvert ! video/x-raw, format=RGB ! ' 
+        
         f'queue name=display_input_q max-size-buffers=3 ! '
         f'hailooverlay ! '
         f'videoconvert ! '
@@ -142,8 +145,6 @@ def get_pipeline_string():
 # --- [Task Functions] ---
 
 def getCurZoneTask(stop_event, args):
-    # This task is now handled inside getObjInfoTask (Callback)
-    # Just keep it alive or empty
     while not stop_event.is_set():
         sleep(1)
 
@@ -194,30 +195,22 @@ def mainTask(stop_event, arg):
         # 1. Safety Check
         if inRoad:
             target_speed = 0
-            # print("Status: [STOP] Obstacle Detected!")
             
         # 2. Cruising Mode (Zone Speed Control)
         else:
-            target_speed = vel_Cruising # Default
+            target_speed = vel_Cruising 
             
             if zone == zoneID['CHILD']:
                 target_speed = vel_ChildZone
-                # print(f"Zone: CHILD ({target_speed})")
             elif zone == zoneID['HIGHACCIDENT']:
                 target_speed = vel_HighAccidentZone
-                # print(f"Zone: HIGH ACCIDENT ({target_speed})")
             elif zone == zoneID['SPEEDBUMP']:
                 target_speed = vel_SpeedBump
-                # print(f"Zone: SPEED BUMP ({target_speed})")
-            else:
-                # print(f"Zone: NORMAL ({target_speed})")
-                pass
         
         globalVar.desiredSpeed = target_speed
         globalVar.desiredAngle = target_angle
         
         sleep(0.1)
 
-# Dummy
 def getCurZone(arg):
     return 0
