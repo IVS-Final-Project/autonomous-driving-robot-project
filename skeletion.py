@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 from picamera2 import Picamera2
 import time
-    
+
+zoneID = {'IDLE' : 0, 'CHILD' : 1, 'HIGHACCIDENT' : 2, 'SPEEDBUMP' : 3}   
 
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 aruco_params = cv2.aruco.DetectorParameters_create()
@@ -31,59 +32,104 @@ def mainTask(stop_flag: threading.Event, 추가로 인자들):
         # 여기에 짜면 돼
         sleep(0.1)
 
-def getCurZone(인자):
-    ZONE_MAP = {
-    0: "Normal Zone",
-    1: "Children Protection Zone",
-    2: "Accident-Prone Zone",
-    3: "Bump Zone",
-    }
-    
-    # Default: no zone detected
-    zone_id = -1
+def getCurZone():
+    """
+    Detect ArUco markers continuously.
+    - If ID is mapped return mapped ID
+    - If ID is not mapped return -1
+    - DO NOT stop detection loop when a marker is detected
+    """
 
-    # Detect ArUco markers
-    corners, ids, rejected = cv2.aruco.detectMarkers(
-        frame, aruco_dict, parameters=aruco_params
-    )
+    # Load ArUco dictionary (4x4_250)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+    aruco_params = cv2.aruco.DetectorParameters_create()
 
-    if ids is not None:
-        # Draw detected markers on the frame
-        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-        
-        marker_id = int(ids[0][0])
-        corner = corners[0][0]
+    # Initialize camera (Picamera2 on RPi, webcam on Windows)
+    if USE_PICAMERA:
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(
+            main={"size": (320, 240), "format": "BGR888"}
+        )
+        picam2.configure(config)
+        picam2.start()
+        time.sleep(1)
+    else:
+        # Windows: 웹캠 사용
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+        time.sleep(1)
 
-        cx = int(np.mean(corner[:, 0]))
-        cy = int(np.mean(corner[:, 1]))
-
-        # Determine zone ID: if marker_id is in ZONE_MAP → use it, else -1
-        if marker_id in ZONE_MAP:
-            zone_id = marker_id
-            zone_name = ZONE_MAP[marker_id]
+    while True:
+        # Capture frame
+        if USE_PICAMERA:
+            frame = picam2.capture_array()
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         else:
-            zone_id = -1
-            zone_name = "Unknown Zone"
+            ret, frame = cap.read()
+            if not ret:
+                print("웹캠을 읽을 수 없습니다")
+                break
+            frame = cv2.resize(frame, (320, 240))
 
-        # Display zone info on the frame
-        cv2.putText(
-            frame,
-            f"{zone_name} (ID:{zone_id})",
-            (cx - 60, cy - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
+        # Detect markers
+        corners, ids, rejected = cv2.aruco.detectMarkers(
+            frame, aruco_dict, parameters=aruco_params
         )
 
-        # Draw corner points
-        for pt in corner:
-            x, y = int(pt[0]), int(pt[1])
-            cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+        zone_id = -1  # Default: unmapped OR not detected
+        zone_name = "Unknown Zone"
 
-        print(f"Detected Marker ID: {marker_id} → Zone ID: {zone_id} ({zone_name})")
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
-    return zoneInfo
+            for i, marker_id in enumerate(ids.flatten()):
+                corner = corners[i][0]
+                cx = int(np.mean(corner[:, 0]))
+                cy = int(np.mean(corner[:, 1]))
+
+                # ---- Determine zone ID ----
+                if marker_id in zoneID:
+                    zone_id = marker_id
+                    zone_name = zoneID[marker_id]
+                else:
+                    zone_id = -1
+                    zone_name = "Unknown Zone"
+
+                # Display zone name
+                cv2.putText(
+                    frame,
+                    f"{zone_name} (ID:{zone_id})",
+                    (cx - 40, cy - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
+
+                print(f"Detected Marker ID: {marker_id} Zone ID: {zone_id} ({zone_name})")
+
+                # Draw corner points
+                for pt in corner:
+                    x, y = int(pt[0]), int(pt[1])
+                    cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+        
+
+        # Show frame
+        cv2.imshow("ArUco Zone Detection", frame)
+
+        # DO NOT return: loop continues
+        # Quit only if the user presses 'q'
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Cleanup
+    if USE_PICAMERA:
+        picam2.stop()
+    else:
+        cap.release()
+    cv2.destroyAllWindows()
+
 
 def getObjDetected(인자):
     # 여기 짜면 돼
