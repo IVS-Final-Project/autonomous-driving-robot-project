@@ -26,15 +26,18 @@ if __name__ == "__main__":
     objInfoTaskThread.start()
     mainTaskThread.start()
 
+    globalVar.desiredAngle = 50
+    globalVar.desiredSpeed = 80
     try:
         while True:
+
             speed = globalVar.desiredSpeed
             angle = globalVar.desiredAngle
 
             lonControl(speed)
             latControl(angle)
 
-            time.sleep(0.05)
+            time.sleep(0.2)
             
     finally:
         stop_event.set()
