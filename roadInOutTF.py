@@ -122,6 +122,82 @@ def getObjInRoad(bbox, line_params_list, frame_shape):
 
     return isObjInRoad
 
+def fit_red_curves(red_mask):
+    """
+    red_mask: 단일 채널(0/255) 빨간 라인 마스크
+    반환값:
+        poly_list: 각 차선별 3차 다항식 계수 리스트
+                   [a3, a2, a1, a0] 형태로
+                   x = a3*y^3 + a2*y**2 + a1*y + a0
+    디버깅:
+        "Red Curve Fit Debug" 윈도우에
+        - 컨투어 점(초록)
+        - 피팅된 3차 곡선(파랑)
+        을 시각화해서 보여줌.
+    """
+    # 컨투어 추출
+    contours, _ = cv2.findContours(
+        red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+
+    if len(contours) < 1:
+        cv2.imshow("Red Curve Fit Debug", red_mask)
+        return []
+
+    # 큰 컨투어 2개까지만 사용 (좌/우 차선 가정)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    contours = contours[:2]
+
+    h, w = red_mask.shape[:2]
+    # 디버깅용 시각화 이미지 (회색 -> BGR)
+    debug_vis = cv2.cvtColor(red_mask, cv2.COLOR_GRAY2BGR)
+
+    poly_list = []
+
+    for cnt in contours:
+        # cnt: (N,1,2) -> (N,2)
+        pts = cnt.reshape(-1, 2)
+        xs = pts[:, 0].astype(np.float32)
+        ys = pts[:, 1].astype(np.float32)
+
+        # 3차 다항식 피팅에는 최소 4개 점 필요
+        if len(xs) < 4:
+            continue
+
+        # x = f(y) 형태로 3차 피팅
+        coeffs = np.polyfit(ys, xs, 3)  # [a3, a2, a1, a0]
+        poly_list.append(coeffs)
+
+        # 1) 원래 컨투어 점 시각화 (초록 점)
+        for x, y in zip(xs.astype(int), ys.astype(int)):
+            if 0 <= x < w and 0 <= y < h:
+                cv2.circle(debug_vis, (x, y), 1, (0, 255, 0), -1)
+
+        # 2) 피팅된 3차 곡선 시각화 (파란 라인)
+        y_min = int(np.clip(ys.min(), 0, h - 1))
+        y_max = int(np.clip(ys.max(), 0, h - 1))
+        if y_max <= y_min:
+            continue
+
+        # 해당 컨투어 y 구간에서 샘플링
+        y_samples = np.linspace(y_min, y_max, num=100).astype(np.float32)
+        x_samples = np.polyval(coeffs, y_samples)
+
+        prev_pt = None
+        for x_f, y_f in zip(x_samples, y_samples):
+            x_i = int(round(x_f))
+            y_i = int(round(y_f))
+            if 0 <= x_i < w and 0 <= y_i < h:
+                if prev_pt is not None:
+                    cv2.line(debug_vis, prev_pt, (x_i, y_i), (255, 0, 0), 2)
+                prev_pt = (x_i, y_i)
+            else:
+                prev_pt = None  # 화면 밖으로 나가면 끊기
+
+    cv2.imshow("Red Curve Fit Debug", debug_vis)
+    return poly_list
+
+
 def main():
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(
@@ -140,7 +216,9 @@ def main():
 
         # 2) 빨간 라인 최대 2개 찾기
         lines = fit_red_lines(red_mask)
-
+        
+        
+        curves = fit_red_curves(red_mask)
         # 3) 도로 위에 임의 bbox 예시 (나중에 YOLO bbox로 대체)
         h, w, _ = frame.shape
         bbox = (w // 2 - 40, h // 2, w // 2 + 40, h // 2 + 80)
