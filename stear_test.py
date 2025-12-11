@@ -23,8 +23,8 @@ def create_camera():
 
 def lane_following_control_loop():
     cam_type, cam = create_camera()
-    kp = 0.01  # 픽셀->각도 비례 이득 (환경에 맞게 튜닝)
-    target_speed = 20
+    kp = 0.1  # 픽셀->각도 비례 이득 (환경에 맞게 튜닝)
+    target_speed = 0
 
     try:
         while True:
