@@ -197,6 +197,110 @@ def fit_red_curves(red_mask):
     cv2.imshow("Red Curve Fit Debug", debug_vis)
     return poly_list
 
+def get_lane_center_error(poly_list, frame_shape, y_ref_ratio=0.9):
+    """
+    poly_list: fit_red_curves(red_mask)가 반환한 3차 다항식 계수 리스트
+               각 원소는 [a3, a2, a1, a0]
+               x = a3*y^3 + a2*y^2 + a1*y + a0
+    frame_shape: frame.shape  (h, w, c)
+    y_ref_ratio: 화면 세로에서 어느 높이에서 기준을 잡을지 (0~1 비율)
+                 0.9 -> 화면 아래쪽 90% 지점 근처 (바닥 가까운 지점)
+
+    반환:
+        error_px       : lane_center_x - camera_center_x (픽셀 단위 오차)
+        lane_center_x  : 기준 y에서 차선 중심 x 좌표
+        camera_center_x: 화면 중심 x 좌표 (w/2)
+
+    의미:
+        error_px > 0 : 차선 중심이 카메라 기준 오른쪽에 있음
+        error_px < 0 : 차선 중심이 카메라 기준 왼쪽에 있음
+    """
+    h, w = frame_shape[:2]
+
+    # 기준 y (화면 아래쪽 근처)
+    y_ref = int(h * y_ref_ratio)
+    y_ref = max(0, min(h - 1, y_ref))  # 안전하게 클램프
+
+    xs = []
+    for coeffs in poly_list:
+        # coeffs: [a3, a2, a1, a0]
+        x_val = np.polyval(coeffs, y_ref)
+        xs.append(x_val)
+
+    if len(xs) == 0:
+        # 곡선이 하나도 없으면 오차 계산 불가
+        return None, None, None
+
+    xs = np.array(xs, dtype=np.float32)
+
+    # 카메라 중심 (이미지 중심)
+    camera_center_x = w / 2.0
+
+    if len(xs) >= 2:
+        # 두 개 이상이면 왼쪽/오른쪽 차선이라고 보고 중앙값 사용
+        xs_sorted = np.sort(xs)
+        left_x = xs_sorted[0]
+        right_x = xs_sorted[-1]
+        lane_center_x = (left_x + right_x) / 2.0
+    else:
+        # 하나만 잡히면 그걸 차선 중심으로 간주
+        lane_center_x = xs[0]
+
+    error_px = lane_center_x - camera_center_x
+
+    return float(error_px), float(lane_center_x), float(camera_center_x)
+
+
+def draw_lane_center_debug(frame, poly_list, y_ref_ratio=0.9):
+    """
+    frame     : BGR 프레임 (원본)
+    poly_list : fit_red_curves(red_mask) 결과
+    y_ref_ratio : 기준 y 비율 (0~1)
+    반환:
+        vis : 디버깅 정보가 그려진 BGR 이미지
+              - 노란 세로선 : 카메라 중심
+              - 하늘색 세로선 : 차선 중심
+              - 기준 y 위치에 작은 점들
+    """
+    vis = frame.copy()
+    h, w, _ = vis.shape
+
+    error_px, lane_center_x, camera_center_x = get_lane_center_error(
+        poly_list, frame.shape, y_ref_ratio
+    )
+
+    # 카메라 중심선 그리기 (노란색)
+    cam_x = int(round(camera_center_x)) if camera_center_x is not None else w // 2
+    cv2.line(vis, (cam_x, 0), (cam_x, h - 1), (0, 255, 255), 1)
+
+    if lane_center_x is not None:
+        lane_x = int(round(lane_center_x))
+        y_ref = int(h * y_ref_ratio)
+        y_ref = max(0, min(h - 1, y_ref))
+
+        # 차선 중심선 그리기 (하늘색)
+        cv2.line(vis, (lane_x, 0), (lane_x, h - 1), (255, 255, 0), 1)
+
+        # 기준 y 위치 표시
+        cv2.circle(vis, (lane_x, y_ref), 5, (255, 255, 0), -1)
+        cv2.circle(vis, (cam_x, y_ref), 5, (0, 255, 255), -1)
+
+        # 텍스트로 오차 표시
+        if error_px is not None:
+            text = f"offset: {error_px:.1f} px"
+            cv2.putText(
+                vis,
+                text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+            )
+
+    return vis
+
+
 
 def main():
     picam2 = Picamera2()
@@ -219,6 +323,14 @@ def main():
         
         
         curves = fit_red_curves(red_mask)
+
+        error_px, lane_center_x, camera_center_x = get_lane_center_error(
+            curves, frame.shape, y_ref_ratio=0.9)
+
+        # 3) 디버깅 시각화
+        lane_center_vis = draw_lane_center_debug(frame, curves, y_ref_ratio=0.9)
+        cv2.imshow("Lane Center Debug", lane_center_vis)
+        
         # 3) 도로 위에 임의 bbox 예시 (나중에 YOLO bbox로 대체)
         h, w, _ = frame.shape
         bbox = (w // 2 - 40, h // 2, w // 2 + 40, h // 2 + 80)
