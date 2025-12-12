@@ -14,7 +14,7 @@ rear_motor = Motor(forward=MotorIN1, backward=MotorIN2, enable=MotorENA, pwm=Tru
 
 def lonControl(vel):
     vel = max(min(vel, 100), -100)
-    print(f"Speed: {vel}")
+    #print(f"Speed: {vel}")
     vel /= 100
     
     if vel > 0:
@@ -28,7 +28,7 @@ def lonControl(vel):
 def latControl(angle):
     angle = max(min(angle, 90), -90)
     
-    print(f"Steering Angle: {angle}")
-    servo.angle = angle
+    #print(f"Steering Angle: {angle}")
+    servo.angle = angle + 2
 
 
