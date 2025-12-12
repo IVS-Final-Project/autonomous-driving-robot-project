@@ -8,8 +8,8 @@ from taskManager import getObjInfoTask, mainTask
 from motorControl import lonControl, latControl
 
 # 키보드 설정값
-SPEED_STEP = 10
-ANGLE_STEP = 15
+SPEED_STEP = 5
+ANGLE_STEP = 10
 
 def get_key():
     fd = sys.stdin.fileno()
@@ -62,9 +62,11 @@ if __name__ == "__main__":
                 break
 
             # 2. 모터 제어 (taskManager2에서 계산된 최종 값 사용)
+            # mainTask가 userTargetSpeed를 참고해서 desiredSpeed를 결정해줍니다.
             final_speed = globalVar.desiredSpeed
             
-            # 조향은 사용자가 직접 제어
+            # 조향은 사용자가 직접 제어 (원하시면 여기도 taskManager 로직 추가 가능)
+            # 지금은 키보드 입력값을 그대로 씁니다.
             globalVar.desiredAngle = globalVar.userTargetAngle 
             final_angle = globalVar.desiredAngle
 
