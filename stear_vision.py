@@ -344,7 +344,7 @@ def compute_steering_command(error_px, heading_error_rad,
 
 def draw_lane_center_debug(frame, poly_list, y_ref_ratio=None):
     """
-    frame     : BGR 프레임 (원본)
+    frame     : BGR 프레임 (cv2.imshow 사용을 위해)
     poly_list : fit_red_curves(red_mask) 결과
     y_ref_ratio : 기준 y 비율 (0~1) - None이면 config 값 사용
     반환:
@@ -504,8 +504,10 @@ def main(stop_event=None, args=None):
                 # 7) 디버깅 시각화
                 if config.DEBUG_VISUALIZATION_ENABLED:
                     try:
+                        # 시각화를 위해 RGB → BGR 변환 (cv2.imshow()가 BGR을 기대)
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                         lane_center_vis = draw_lane_center_debug(
-                            frame, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
+                            frame_bgr, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
                         )
 
                         # heading error 디버깅 텍스트
