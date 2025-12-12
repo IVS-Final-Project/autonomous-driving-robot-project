@@ -35,8 +35,8 @@ def get_red_mask(frame):
         if frame is None or frame.size == 0:
             raise ValueError("Invalid frame: frame is None or empty")
         
-        # RGB → HSV 변환 (프레임이 RGB 포맷이므로)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        # BGR → HSV 변환 (Picamera2에서 BGR888로 받음)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         lower_red1 = np.array(config.RED_HSV_LOWER1)
         upper_red1 = np.array(config.RED_HSV_UPPER1)
@@ -344,7 +344,7 @@ def compute_steering_command(error_px, heading_error_rad,
 
 def draw_lane_center_debug(frame, poly_list, y_ref_ratio=None):
     """
-    frame     : BGR 프레임 (cv2.imshow 사용을 위해)
+    frame     : BGR 프레임 (원본)
     poly_list : fit_red_curves(red_mask) 결과
     y_ref_ratio : 기준 y 비율 (0~1) - None이면 config 값 사용
     반환:
@@ -447,8 +447,8 @@ def main(stop_event=None, args=None):
                 
                 retry_count = 0  # 정상 프레임 시 카운터 리셋
                 
-                # RGB 포맷 유지 (Picamera2에서 RGB888로 반환)
-                # frame은 이미 RGB 포맷
+                # BGR 포맷으로 변환 (Picamera2에서 RGB로 반환되므로 BGR로 변환)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
                 # 2) 빨간 라인 마스크
                 try:
@@ -504,10 +504,9 @@ def main(stop_event=None, args=None):
                 # 7) 디버깅 시각화
                 if config.DEBUG_VISUALIZATION_ENABLED:
                     try:
-                        # 시각화를 위해 RGB → BGR 변환 (cv2.imshow()가 BGR을 기대)
-                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        # frame은 이미 BGR 포맷 (위에서 변환함)
                         lane_center_vis = draw_lane_center_debug(
-                            frame_bgr, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
+                            frame, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
                         )
 
                         # heading error 디버깅 텍스트
