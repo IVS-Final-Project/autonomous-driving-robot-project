@@ -5,6 +5,7 @@ import termios
 import tty
 import globalVar
 from taskManager import getObjInfoTask, mainTask
+from stear_vision import main as stear_main
 from motorControl import lonControl, latControl
 
 # 키보드 설정값
@@ -29,9 +30,11 @@ if __name__ == "__main__":
     # 스레드 시작
     objInfoTaskThread = threading.Thread(target=getObjInfoTask, args=(stop_event, args))
     mainTaskThread = threading.Thread(target=mainTask, args=(stop_event, args))
+    stearVisionThread = threading.Thread(target=stear_main, args=(stop_event, args))
     
     objInfoTaskThread.start()
     mainTaskThread.start()
+    stearVisionThread.start()
 
     print("=== Manual Control Mode ===")
     print(" W/S: Speed Up/Down")
@@ -64,8 +67,8 @@ if __name__ == "__main__":
             # 2. 모터 제어 (taskManager2에서 계산된 최종 값 사용)
             final_speed = globalVar.desiredSpeed
             
-            # 조향은 사용자가 직접 
-            globalVar.desiredAngle = globalVar.userTargetAngle 
+            # 조향은 사용자 입력 + 자동 조향값(LKSangle) 혼합
+            globalVar.desiredAngle = globalVar.userTargetAngle + globalVar.LKSangle
             final_angle = globalVar.desiredAngle
 
             lonControl(final_speed)
@@ -80,4 +83,5 @@ if __name__ == "__main__":
         stop_event.set()
         objInfoTaskThread.join()
         mainTaskThread.join()
+        stearVisionThread.join()
         print("System Stopped.")
