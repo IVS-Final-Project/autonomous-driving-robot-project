@@ -14,9 +14,9 @@ from gi.repository import Gst, GLib
 # --- [설정 상수] ---
 zoneID = {'IDLE' : 0, 'CHILD' : 1, 'HIGHACCIDENT' : 2, 'SPEEDBUMP' : 3}
 vel_IDLE =30
-vel_ChildZone = 15
+vel_ChildZone = 13
 vel_HighAccidentZone = 20
-vel_SpeedBump = 25
+vel_SpeedBump = 13
 vel_ObjInRoad = 10
 
 # ArUco 설정
@@ -207,46 +207,44 @@ def getCurZoneTask(stop_event, args):
 
 def mainTask(stop_event, args):
     while not stop_event.is_set():
-        # 1. 센서 정보 읽기
+        # 1. 센서 정보
         zone = globalVar.zoneInfo
         detected = globalVar.isObjDetected
         inRoad = globalVar.isObjInRoad
-        
-        # 2. 사용자 요청 속도 가져오기
         target_speed = globalVar.userTargetSpeed
         
-        # 3. Zone별 제한 속도 설정
-        speed_limit = 100 # 기본 제한 없음 
-
-        if zone == zoneID['IDLE']: 
-            speed_limit = vel_IDLE #30
-            print(f"[IDLE].")     
-        elif zone == zoneID['CHILD']: 
-            speed_limit = vel_ChildZone #30
-            print(f"[CHILD] ")        
-        elif zone == zoneID['HIGHACCIDENT']:
-            speed_limit = vel_HighAccidentZone #50
-            print(f"[HIGHACCIDENT] ")   
-        elif zone == zoneID['SPEEDBUMP']:
-            speed_limit = vel_SpeedBump       #20
-            print(f"[SPEEDBUMP] ")   
+        # 2. [핵심] 속도 결정 로직 (Set)
         
-        # if target_speed > speed_limit:
-        #     final_speed = speed_limit
-        # else:
-        final_speed = target_speed
+        # (A) 평소(IDLE) -> 내 키보드 속도(target_speed)를 따름
+        if zone == zoneID['IDLE']:
+            final_speed = target_speed
+            # print(f"[IDLE] Manual Control: {final_speed}")
 
-        # 5. 장애물 감지 시 최우선 정지
+        # (B) 특정 구역 -> 해당 속도로 강제 고정 (Set)
+        elif zone == zoneID['CHILD']: 
+            final_speed = vel_ChildZone  # 15로 고정
+            print(f"[CHILD] Speed Fixed to {final_speed}")
+            
+        elif zone == zoneID['HIGHACCIDENT']:
+            final_speed = vel_HighAccidentZone # 20으로 고정
+            print(f"[HIGHACCIDENT] Speed Fixed to {final_speed}")
+            
+        elif zone == zoneID['SPEEDBUMP']:
+            final_speed = vel_SpeedBump  # 25로 고정
+            print(f"[SPEEDBUMP] Speed Fixed to {final_speed}")
+            
+        else:
+            final_speed = target_speed # 예외 처리
+
+        # 3. [최우선] 장애물 감지 시 정지 (0으로 덮어쓰기)
         if detected:
             if inRoad:
                 final_speed = 0
-                print(f"[STOP] Obstacle in Road!, speed set to 0.")
-            # else:
-            #     # 도로 밖 장애물은 서행 (예: 10)
-            #     final_speed = min(final_speed, vel_ObjInRoad)
-            #     print(f"[WARN] Obstacle nearby. Slowing down., speed set to {final_speed}.")
+                print(f"[STOP] Obstacle in Road!")
 
-        # 6. 결과 업데이트
+        # 4. 결과 업데이트
         globalVar.desiredSpeed = final_speed
-        #lonControl(final_speed)
+        lonControl(final_speed)
+        # (모터 제어는 main.py가 하므로 여기선 lonControl 호출 금지)
+        
         sleep(0.1)
