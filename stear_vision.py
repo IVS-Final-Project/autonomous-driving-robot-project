@@ -35,7 +35,8 @@ def get_red_mask(frame):
         if frame is None or frame.size == 0:
             raise ValueError("Invalid frame: frame is None or empty")
         
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # RGB → HSV 변환 (프레임이 RGB 포맷이므로)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
         lower_red1 = np.array(config.RED_HSV_LOWER1)
         upper_red1 = np.array(config.RED_HSV_UPPER1)
@@ -446,8 +447,8 @@ def main(stop_event=None, args=None):
                 
                 retry_count = 0  # 정상 프레임 시 카운터 리셋
                 
-                # RGB → BGR 변환 (config에서 RGB888로 지정했으므로)
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                # RGB 포맷 유지 (Picamera2에서 RGB888로 반환)
+                # frame은 이미 RGB 포맷
 
                 # 2) 빨간 라인 마스크
                 try:
