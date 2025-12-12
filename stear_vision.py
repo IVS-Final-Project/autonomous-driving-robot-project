@@ -21,42 +21,25 @@ logger = logging.getLogger(__name__)
 def get_red_mask(frame):
     """
     프레임에서 빨간 라인을 감지하는 마스크 생성
-    
-    Args:
-        frame: BGR 프레임
-        
-    Returns:
-        red_mask: 이진 마스크 (빨간색 영역 = 255)
-        
-    Raises:
-        ValueError: frame이 None이거나 유효하지 않은 경우
     """
-    try:
-        if frame is None or frame.size == 0:
-            raise ValueError("Invalid frame: frame is None or empty")
-        
-        # BGR → HSV 변환 (Picamera2에서 BGR888로 받음)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        lower_red1 = np.array(config.RED_HSV_LOWER1)
-        upper_red1 = np.array(config.RED_HSV_UPPER1)
-        lower_red2 = np.array(config.RED_HSV_LOWER2)
-        upper_red2 = np.array(config.RED_HSV_UPPER2)
+    lower_red1 = np.array([0, 50, 50])
+    upper_red1 = np.array([10, 255, 255])
 
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    lower_red2 = np.array([170, 50, 50])
+    upper_red2 = np.array([180, 255, 255])
 
-        red_mask = cv2.bitwise_or(mask1, mask2)
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
 
-        kernel = np.ones((config.MORPH_KERNEL_SIZE, config.MORPH_KERNEL_SIZE), np.uint8)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=config.MORPH_CLOSE_ITERATIONS)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel, iterations=config.MORPH_OPEN_ITERATIONS)
+    red_mask = cv2.bitwise_or(mask1, mask2)
 
-        return red_mask
-    
-    except Exception as e:
-        logger.error(f"Error in get_red_mask: {e}")
-        raise
+    kernel = np.ones((3, 3), np.uint8)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    return red_mask
 
 
 
@@ -417,167 +400,75 @@ def main(stop_event=None, args=None):
     
     try:
         # 카메라 초기화
-        try:
-            picam2 = Picamera2()
-            config_dict = picam2.create_preview_configuration(
-                main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
-            )
-            picam2.configure(config_dict)
-            picam2.start()
-            sleep(1)
-            logger.info("Camera initialized successfully")
-        except Exception as e:
-            logger.error(f"Camera initialization failed: {e}")
-            raise
+        picam2 = Picamera2()
+        config_dict = picam2.create_preview_configuration(
+            main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
+        )
+        picam2.configure(config_dict)
+        picam2.start()
+        sleep(1)
 
         # 메인 루프
         frame_count = 0
         while not (stop_event and stop_event.is_set()):
             try:
-                # 1) 프레임 캡처
+                # 1) 프레임 캡처 (RGB888로 반환됨)
                 frame = picam2.capture_array()
-                if frame is None or frame.size == 0:
-                    logger.warning("Invalid frame captured")
-                    retry_count += 1
-                    if retry_count > config.MAX_RETRIES:
-                        logger.error(f"Failed to capture valid frame after {config.MAX_RETRIES} retries")
-                        break
-                    sleep(config.RETRY_DELAY)
-                    continue
                 
-                retry_count = 0  # 정상 프레임 시 카운터 리셋
-                
-                # BGR 포맷으로 변환 (Picamera2에서 RGB로 반환되므로 BGR로 변환)
+                # 2) RGB → BGR 변환 (OpenCV는 BGR을 기본으로 함)
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-                # 2) 빨간 라인 마스크
-                try:
-                    red_mask = get_red_mask(frame)
-                except Exception as e:
-                    logger.warning(f"Error in get_red_mask: {e}")
-                    red_mask = None
+                # 3) 빨간 라인 마스크
+                red_mask = get_red_mask(frame)
                 
-                # 3) 3차 곡선 피팅
-                try:
-                    curves = fit_red_curves(red_mask) if red_mask is not None else []
-                except Exception as e:
-                    logger.warning(f"Error in fit_red_curves: {e}")
-                    curves = []
+                # 4) 3차 곡선 피팅
+                curves = fit_red_curves(red_mask)
 
-                # 4) lateral error (px 단위)
-                try:
-                    error_px, lane_center_x, camera_center_x = get_lane_center_error(
-                        curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
-                    )
-                except Exception as e:
-                    logger.warning(f"Error in get_lane_center_error: {e}")
-                    error_px, lane_center_x, camera_center_x = None, None, None
+                # 5) lateral error (px 단위)
+                error_px, lane_center_x, camera_center_x = get_lane_center_error(
+                    curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
+                )
 
-                # 5) heading error (rad 단위)
-                try:
-                    heading_error_rad = get_lane_heading_error(
-                        curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
-                    )
-                except Exception as e:
-                    logger.warning(f"Error in get_lane_heading_error: {e}")
-                    heading_error_rad = None
+                # 6) heading error (rad 단위)
+                heading_error_rad = get_lane_heading_error(
+                    curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
+                )
 
-                # 6) 조향 명령 계산
-                try:
-                    steering_cmd = compute_steering_command(
-                        error_px,
-                        heading_error_rad,
-                        K_lat=config.K_LATERAL,
-                        K_head=config.K_HEADING
-                    )
-                    globalVar.LKSangle = steering_cmd
-                except Exception as e:
-                    logger.warning(f"Error in compute_steering_command: {e}")
-                    steering_cmd = 0.0
+                # 7) 조향 명령 계산
+                steering_cmd = compute_steering_command(
+                    error_px,
+                    heading_error_rad,
+                    K_lat=config.K_LATERAL,
+                    K_head=config.K_HEADING
+                )
+                globalVar.LKSangle = steering_cmd
 
-                # TODO: steering_cmd를 실제 모터/서보 제어로 변환
-                # 예시)
-                # pwm_val = int(config.PWM_NEUTRAL + steering_cmd * config.PWM_STEERING_RANGE)
-                # pwm_val = max(config.PWM_MIN, min(config.PWM_MAX, pwm_val))
-                # send_pwm_to_servo(pwm_val)
-
-                # 7) 디버깅 시각화
+                # 8) 디버깅 시각화
                 if config.DEBUG_VISUALIZATION_ENABLED:
-                    try:
-                        # frame은 이미 BGR 포맷 (위에서 변환함)
-                        lane_center_vis = draw_lane_center_debug(
-                            frame, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
-                        )
+                    lane_center_vis = draw_lane_center_debug(
+                        frame, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
+                    )
+                    cv2.imshow("Lane Center Debug", lane_center_vis)
 
-                        # heading error 디버깅 텍스트
-                        if heading_error_rad is not None:
-                            text2 = f"heading: {np.degrees(heading_error_rad):.1f} deg"
-                            cv2.putText(
-                                lane_center_vis,
-                                text2,
-                                (10, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.8,
-                                (255, 0, 0),
-                                2,
-                            )
-                        
-                        # steering command 표시
-                        text3 = f"steering: {steering_cmd:.3f}"
-                        cv2.putText(
-                            lane_center_vis,
-                            text3,
-                            (10, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,
-                            (200, 100, 0),
-                            2,
-                        )
-
-                        cv2.imshow("Lane Center Debug", lane_center_vis)
-                    except Exception as e:
-                        logger.warning(f"Error in visualization: {e}")
-
-                # 8) 종료 키 처리
+                # 9) 종료 키 처리
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    logger.info("Quit signal received")
                     break
 
                 frame_count += 1
-                if frame_count % 100 == 0:
-                    logger.info(f"Processed {frame_count} frames")
-
-            except KeyboardInterrupt:
-                logger.info("KeyboardInterrupt received")
-                break
+            
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
-                retry_count += 1
-                if retry_count > config.MAX_RETRIES:
-                    logger.error(f"Too many errors, exiting")
-                    break
-                sleep(config.RETRY_DELAY)
                 continue
 
     except Exception as e:
         logger.error(f"Fatal error in main: {e}")
     
     finally:
-        # 정리
         try:
-            if picam2 is not None:
-                picam2.stop()
-                logger.info("Camera stopped")
-        except Exception as e:
-            logger.error(f"Error stopping camera: {e}")
-        
-        try:
-            cv2.destroyAllWindows()
-            logger.info("All windows closed")
-        except Exception as e:
-            logger.error(f"Error closing windows: {e}")
-        
-        logger.info("Program terminated")
+            picam2.stop()
+        except:
+            pass
+        cv2.destroyAllWindows()
 
 
 
