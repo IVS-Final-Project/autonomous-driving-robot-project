@@ -14,13 +14,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
 # ---------------------------------------------------
 # 1. 라인 마스크 생성
 # ---------------------------------------------------
 def get_red_mask(frame):
     """
     프레임에서 빨간 라인을 감지하는 마스크 생성
+    (입력 frame은 BGR 기준)
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -42,7 +42,6 @@ def get_red_mask(frame):
     return red_mask
 
 
-
 def fit_red_curves(red_mask):
     """
     red_mask: 단일 채널(0/255) 빨간 라인 마스크
@@ -60,7 +59,6 @@ def fit_red_curves(red_mask):
         if red_mask is None or red_mask.size == 0:
             raise ValueError("Invalid red_mask: mask is None or empty")
         
-        # 컨투어 추출
         contours, _ = cv2.findContours(
             red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )
@@ -76,40 +74,38 @@ def fit_red_curves(red_mask):
         contours = contours[:2]
 
         h, w = red_mask.shape[:2]
-        # 디버깅용 시각화 이미지 (회색 -> BGR)
         debug_vis = cv2.cvtColor(red_mask, cv2.COLOR_GRAY2BGR)
 
         poly_list = []
 
         for cnt in contours:
-            # cnt: (N,1,2) -> (N,2)
             pts = cnt.reshape(-1, 2)
             xs = pts[:, 0].astype(np.float32)
             ys = pts[:, 1].astype(np.float32)
 
-            # 3차 다항식 피팅에는 최소 4개 점 필요
             if len(xs) < config.MIN_CONTOUR_POINTS:
-                logger.debug(f"Contour has less than {config.MIN_CONTOUR_POINTS} points: {len(xs)}")
+                logger.debug(
+                    f"Contour has less than {config.MIN_CONTOUR_POINTS} points: {len(xs)}"
+                )
                 continue
 
             try:
-                # x = f(y) 형태로 3차 피팅
-                coeffs = np.polyfit(ys, xs, config.POLY_FIT_DEGREE)  # [a3, a2, a1, a0]
+                # 3차 다항식 피팅: x = f(y)
+                coeffs = np.polyfit(ys, xs, config.POLY_FIT_DEGREE)
                 poly_list.append(coeffs)
 
                 if config.DEBUG_VISUALIZATION_ENABLED:
-                    # 1) 원래 컨투어 점 시각화 (초록 점)
+                    # 컨투어 점 (초록)
                     for x, y in zip(xs.astype(int), ys.astype(int)):
                         if 0 <= x < w and 0 <= y < h:
                             cv2.circle(debug_vis, (x, y), 1, (0, 255, 0), -1)
 
-                    # 2) 피팅된 3차 곡선 시각화 (파란 라인)
+                    # 피팅 곡선 (파랑)
                     y_min = int(np.clip(ys.min(), 0, h - 1))
                     y_max = int(np.clip(ys.max(), 0, h - 1))
                     if y_max <= y_min:
                         continue
 
-                    # 해당 컨투어 y 구간에서 샘플링
                     y_samples = np.linspace(y_min, y_max, num=100).astype(np.float32)
                     x_samples = np.polyval(coeffs, y_samples)
 
@@ -122,8 +118,8 @@ def fit_red_curves(red_mask):
                                 cv2.line(debug_vis, prev_pt, (x_i, y_i), (255, 0, 0), 2)
                             prev_pt = (x_i, y_i)
                         else:
-                            prev_pt = None  # 화면 밖으로 나가면 끊기
-            
+                            prev_pt = None
+
             except Exception as e:
                 logger.warning(f"Error fitting curve to contour: {e}")
                 continue
@@ -138,11 +134,12 @@ def fit_red_curves(red_mask):
         logger.error(f"Error in fit_red_curves: {e}")
         raise
 
+
 def get_lane_center_error(poly_list, frame_shape, y_ref_ratio=None):
     """
     poly_list: fit_red_curves(red_mask)가 반환한 3차 다항식 계수 리스트
                각 원소는 [a3, a2, a1, a0]
-               x = a3*y^3 + a2*y^2 + a1*y + a0
+               x = a3*y^3 + a2*y**2 + a1*y + a0
     frame_shape: frame.shape  (h, w, c)
     y_ref_ratio: 화면 세로에서 어느 높이에서 기준을 잡을지 (0~1 비율)
                  None이면 config에서 기본값 사용
@@ -165,9 +162,8 @@ def get_lane_center_error(poly_list, frame_shape, y_ref_ratio=None):
         
         h, w = frame_shape[:2]
 
-        # 기준 y (화면 아래쪽 근처)
         y_ref = int(h * y_ref_ratio)
-        y_ref = max(0, min(h - 1, y_ref))  # 안전하게 클램프
+        y_ref = max(0, min(h - 1, y_ref))
 
         xs = []
         for coeffs in poly_list:
@@ -176,47 +172,38 @@ def get_lane_center_error(poly_list, frame_shape, y_ref_ratio=None):
                     logger.warning(f"Invalid coefficient length: {len(coeffs)}")
                     continue
                 
-                # coeffs: [a3, a2, a1, a0]
                 x_val = float(np.polyval(coeffs, y_ref))
             except Exception as e:
-                # 다항식 평가 실패(형식 이상 등)
                 logger.warning(f"Error evaluating polynomial: {e}")
                 continue
 
-            # 필터: 유한값이어야 하고, 합리적인 범위 내에 있어야 함
             if config.CHECK_FINITE_VALUES and not np.isfinite(x_val):
                 logger.warning(f"Non-finite x value: {x_val}")
                 continue
 
-            # 프레임 폭을 기준으로 너무 벗어난 값은 이상치로 간주
-            # (예: 카메라 중심에서 10배 이상 벗어나면 무시)
-            if x_val < -config.X_VALUE_RANGE_MULTIPLIER * w or x_val > config.X_VALUE_RANGE_MULTIPLIER * w:
+            if (x_val < -config.X_VALUE_RANGE_MULTIPLIER * w or
+                x_val >  config.X_VALUE_RANGE_MULTIPLIER * w):
                 logger.debug(f"x value out of range: {x_val}")
                 continue
 
             xs.append(x_val)
 
         if len(xs) == 0:
-            # 곡선이 하나도 없으면 오차 계산 불가
             logger.debug("No valid curves found")
             return None, None, None
 
         xs = np.array(xs, dtype=np.float32)
 
-        # 카메라 중심 (이미지 중심)
         camera_center_x = w / 2.0
 
         if len(xs) >= 2:
-            # 두 개 이상이면 왼쪽/오른쪽 차선이라고 보고 중앙값 사용
             xs_sorted = np.sort(xs)
             left_x = xs_sorted[0]
             right_x = xs_sorted[-1]
             lane_center_x = (left_x + right_x) / 2.0
         else:
-            # 하나만 잡히면 그걸 차선 중심으로 간주
             lane_center_x = xs[0]
 
-        # 차선 중심값을 프레임 내부로 클램프(안정성)
         lane_center_x = max(0.0, min(float(w - 1), float(lane_center_x)))
 
         error_px = lane_center_x - camera_center_x
@@ -227,6 +214,7 @@ def get_lane_center_error(poly_list, frame_shape, y_ref_ratio=None):
     except Exception as e:
         logger.error(f"Error in get_lane_center_error: {e}")
         return None, None, None
+
 
 def get_lane_heading_error(poly_list, frame_shape, y_ref_ratio=None):
     """
@@ -271,10 +259,8 @@ def get_lane_heading_error(poly_list, frame_shape, y_ref_ratio=None):
             logger.debug("No valid slopes found")
             return None
 
-        # 여러 개 있으면 평균
         dx_dy_mean = float(np.mean(slopes))
 
-        # rad 단위 기울기
         lane_angle_rad = float(np.arctan(dx_dy_mean))
 
         # 카메라 기준 "세로가 정면"이라고 가정 → target = 0 rad
@@ -286,6 +272,7 @@ def get_lane_heading_error(poly_list, frame_shape, y_ref_ratio=None):
     except Exception as e:
         logger.error(f"Error in get_lane_heading_error: {e}")
         return None
+
 
 def compute_steering_command(error_px, heading_error_rad,
                              K_lat=None, K_head=None):
@@ -310,12 +297,10 @@ def compute_steering_command(error_px, heading_error_rad,
             logger.warning("error_px or heading_error_rad is None")
             return 0.0
 
-        # 여기서는 "lane_center가 오른쪽이면 +error_px"이므로
-        # steering_cmd도 오른쪽 +가 되도록 부호를 맞춰줌
         steering = K_lat * error_px + K_head * heading_error_rad
 
-        # 안정성을 위해 saturation
-        steering = max(config.STEERING_CMD_MIN, min(config.STEERING_CMD_MAX, steering))
+        steering = max(config.STEERING_CMD_MIN,
+                       min(config.STEERING_CMD_MAX, steering))
 
         logger.debug(f"Steering command: {steering:.3f}")
         return steering
@@ -351,7 +336,6 @@ def draw_lane_center_debug(frame, poly_list, y_ref_ratio=None):
             poly_list, frame.shape, y_ref_ratio
         )
 
-        # 카메라 중심선 그리기 (노란색)
         cam_x = int(round(camera_center_x)) if camera_center_x is not None else w // 2
         cv2.line(vis, (cam_x, 0), (cam_x, h - 1), (0, 255, 255), 1)
 
@@ -360,14 +344,11 @@ def draw_lane_center_debug(frame, poly_list, y_ref_ratio=None):
             y_ref = int(h * y_ref_ratio)
             y_ref = max(0, min(h - 1, y_ref))
 
-            # 차선 중심선 그리기 (하늘색)
             cv2.line(vis, (lane_x, 0), (lane_x, h - 1), (255, 255, 0), 1)
 
-            # 기준 y 위치 표시
             cv2.circle(vis, (lane_x, y_ref), 5, (255, 255, 0), -1)
             cv2.circle(vis, (cam_x, y_ref), 5, (0, 255, 255), -1)
 
-            # 텍스트로 오차 표시
             if error_px is not None:
                 text = f"offset: {error_px:.1f} px"
                 cv2.putText(
@@ -396,45 +377,46 @@ def main(stop_event=None, args=None):
         args: 추가 인자 (미사용)
     """
     picam2 = None
-    retry_count = 0
     
     try:
-        # 카메라 초기화
+        # === 카메라 초기화 ===
         picam2 = Picamera2()
         config_dict = picam2.create_preview_configuration(
-            main={"size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT), "format": "RGB888"}
+            main={
+                "size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT),
+                # ★ 여기서 BGR888로 고정: OpenCV에서 바로 BGR로 사용
+                "format": "BGR888"
+            }
         )
         picam2.configure(config_dict)
         picam2.start()
         sleep(1)
 
-        # 메인 루프
         frame_count = 0
+
         while not (stop_event and stop_event.is_set()):
             try:
-                # 1) 프레임 캡처 (RGB888로 반환됨)
-                frame = picam2.capture_array()
-                
-                # 2) RGB → BGR 변환 (OpenCV는 BGR을 기본으로 함)
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                # 1) 프레임 캡처
+                # Picamera2에서 이미 BGR888로 받아오므로 추가 색 변환 필요 X
+                frame = picam2.capture_array()  # BGR
 
-                # 3) 빨간 라인 마스크
+                # 2) 빨간 라인 마스크
                 red_mask = get_red_mask(frame)
                 
-                # 4) 3차 곡선 피팅
+                # 3) 3차 곡선 피팅
                 curves = fit_red_curves(red_mask)
 
-                # 5) lateral error (px 단위)
+                # 4) lateral error (px)
                 error_px, lane_center_x, camera_center_x = get_lane_center_error(
                     curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
                 )
 
-                # 6) heading error (rad 단위)
+                # 5) heading error (rad)
                 heading_error_rad = get_lane_heading_error(
                     curves, frame.shape, y_ref_ratio=config.LANE_Y_REF_RATIO
                 )
 
-                # 7) 조향 명령 계산
+                # 6) 조향 명령 계산
                 steering_cmd = compute_steering_command(
                     error_px,
                     heading_error_rad,
@@ -443,14 +425,27 @@ def main(stop_event=None, args=None):
                 )
                 globalVar.LKSangle = steering_cmd
 
-                # 8) 디버깅 시각화
+                # 7) 디버깅 시각화
                 if config.DEBUG_VISUALIZATION_ENABLED:
                     lane_center_vis = draw_lane_center_debug(
                         frame, curves, y_ref_ratio=config.LANE_Y_REF_RATIO
                     )
+
+                    # heading 디버그 출력
+                    if heading_error_rad is not None:
+                        text2 = f"heading: {np.degrees(heading_error_rad):.1f} deg"
+                        cv2.putText(
+                            lane_center_vis,
+                            text2,
+                            (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (255, 0, 0),
+                            2,
+                        )
+
                     cv2.imshow("Lane Center Debug", lane_center_vis)
 
-                # 9) 종료 키 처리
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
@@ -465,11 +460,11 @@ def main(stop_event=None, args=None):
     
     finally:
         try:
-            picam2.stop()
+            if picam2 is not None:
+                picam2.stop()
         except:
             pass
         cv2.destroyAllWindows()
-
 
 
 if __name__ == "__main__":
