@@ -1,290 +1,37 @@
 import globalVar
 from time import sleep
-import cv2
-import numpy as np
-from picamera2 import Picamera2
-import time
 import sys
+import numpy as np
+import cv2
 import gi
-import threading
-from hailoManager import HailoDetector
+import hailo
+from motorControl import lonControl, latControl
 
-#=======================================================================
-# HailoManager 불러오기
-try:
-    from hailoManager import HailoDetector
-    hailo_available = True
-except ImportError:
-    print("[Warning] hailoManager not found. AI disabled.")
-    hailo_available = False
-#=======================================================================
-# Hailo Detector 초기화 (에러 나도 통과)
-hailo_detector = None
-if hailo_available:
-    try:
-        HEF_PATH = "/usr/local/hailo/resources/models/hailo8/yolov8m.hef" # 수정해야 돼
-        hailo_detector = HailoDetector(HEF_PATH)
-    except Exception as e:
-        print(f"[Warning] Hailo Init Failed: {e}")
-#=======================================================================
-# Mapping table: ArUco ID zone name
-ZONE_MAP = {
-    0: "Normal Zone",
-    1: "Children Protection Zone",
-    2: "Accident-Prone Zone",
-    3: "Bump Zone",
-}
-#=======================================================================
-# 속도 값
-vel_ChildZone= 30 # 어린이 보호구역 목표 속도
-vel_HighAccidentZone = 50 # 사고다발지역 목표 속도
-vel_SpeedBump = 20 # 과속 방지턱 목표 속도
-vel_ObjInRoad = 10 # 도로 밖에서 장애물을 인식했을 때 목표 속도
-#=======================================================================
-# 카메라 접근 충돌 방지
-camera_lock = threading.Lock()
-#=======================================================================
-# Picamera Init
-picam2 = Picamera2()
-config = picam2.create_preview_configuration(
-    main={"size": (320, 240), "format": "BGR888"}
-)
-picam2.configure(config)
-picam2.start()
-time.sleep(1)
-#=======================================================================
-# Load ArUco dictionary (4x4_250)
+# GStreamer 라이브러리 로드
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst, GLib
+
+# --- [설정 상수] ---
+zoneID = {'IDLE' : 0, 'CHILD' : 1, 'HIGHACCIDENT' : 2, 'SPEEDBUMP' : 3}
+vel_ChildZone = 30
+vel_HighAccidentZone = 50
+vel_SpeedBump = 20
+vel_ObjInRoad = 10
+
+# ArUco 설정
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 aruco_params = cv2.aruco.DetectorParameters_create()
-#=======================================================================
-# Hailo 설정값 -> 사람 빼고 다 버려도 되지 않나?
-OBSTACLE_CLASSES = ['chair', 'couch', 'potted plant', 'bed', 'dining table', 'tv', 'suitcase', 'backpack', 'umbrella']
+ZONE_MAP = {0: "Normal", 1: "Child", 2: "Accident", 3: "Bump"}
+
+# Hailo 장애물 클래스
+OBSTACLE_CLASSES = ['people', 'car']
 COLLISION_AREA_THRESHOLD = 0.15
-#=======================================================================
 
-
-# TASK
-def getCurZoneTask(stop_event, args):
-    while not stop_event.is_set():
-        try:
-            frame = None
-            # 1. 카메라 Lock 걸고
-            with camera_lock:
-                if picam2 is not None:
-                    frame = picam2.capture_array()
-            
-            # 2. ArUco 인식
-            if frame is not None:
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                globalVar.zoneInfo = getCurZone(frame_bgr)
-            
-            sleep(0.1)
-        except Exception as e:
-            # print(f"ZoneTask Error: {e}")
-            sleep(1)
-
-def getObjInfoTask(stop_event, args):
-    while not stop_event.is_set():
-        try:
-            frame = None
-            with camera_lock:
-                if picam2 is not None:
-                    frame = picam2.capture_array()
-
-            if frame is not None:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                globalVar.isObjDetected, globalVar.isObjInRoad = getObjInfo(frame)
-
-            sleep(0.1)
-
-        except Exception as e:
-            print(f"ObjTask Error: {e}")
-            sleep(1)
-
-def mainTask(stop_event, args):
-    while not stop_event.is_set():
-        zone = globalVar.zoneInfo
-        detected = globalVar.isObjDetected
-        inRoad = globalVar.isObjInRoad
-        speed = 10
-        
-        if detected:
-            if inRoad:
-                speed = 0
-            else:
-                speed = vel_ObjInRoad
-        
-        elif zone == 0:
-            speed = globalVar.desiredSpeed
-        elif zone == 1:
-            speed = vel_ChildZone
-        elif zone == 2:
-            speed = vel_HighAccidentZone
-        elif zone == 3:
-            speed = vel_SpeedBump
-        
-        globalVar.desiredSpeed = speed
-
-        print("=====================================")
-        print("desiredSpeed: ",globalVar.desiredSpeed)
-        print("=====================================")
-        sleep(0.1)
-
-def getCurZone(frame):
-    """
-    - 입력: 카메라 프레임 (frame)
-    - 출력: 감지된 Zone ID (없으면 -1)
-    """
-
-    if frame is None:
-            return -1
-
-    corners, ids, rejected = cv2.aruco.detectMarkers(
-            frame, aruco_dict, parameters=aruco_params
-        )
-    zone_id = -1  # Default: unmapped OR not detected
-    zone_name = "Unknown Zone"
-
-    if ids is not None:
-        #cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-
-        for i, marker_id in enumerate(ids.flatten()):
-            # corner = corners[i][0]
-            # cx = int(np.mean(corner[:, 0]))
-            # cy = int(np.mean(corner[:, 1]))
-
-            if marker_id in ZONE_MAP:
-                zone_id = marker_id
-                zone_name = ZONE_MAP[marker_id]
-            else:
-                zone_id = -1
-                zone_name = "Unknown Zone"
-
-            # cv2.putText(
-            #     frame,
-            #     f"{zone_name} (ID:{zone_id})",
-            #     (cx - 40, cy - 20),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     0.6,
-            #     (0, 255, 0),
-            #     2,
-            # )
-
-            print(f"Detected Marker ID: {marker_id} Zone ID: {zone_id} ({zone_name})")
-
-            # for pt in corner:
-            #     x, y = int(pt[0]), int(pt[1])
-            #     cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
-    
-    # cv2.imshow("ArUco Zone Detection", frame)
-    # if cv2.waitKey(1) & 0xFF == ord('q'):
-    #     break
-    # cv2.destroyAllWindows()
-    return zone_id
-
-
-#=======================================================================
-# Using Hailo
-#=======================================================================
-def getObjDetected(frame):
-    """
-    Hailo를 이용해 객체(사람) 감지
-    """
-    isDetected = 0
-    bbox = None
-    
-    # Hailo가 없거나 초기화 실패 시 빈 리스트 반환
-    detections = []
-    if hailo_detector and hailo_detector.active:
-        detections = hailo_detector.infer(frame)
-    
-    h, w, _ = frame.shape
-    priority_found = False
-    max_area = 0
-    target_box = None # [x1, y1, x2, y2]
-
-    for det in detections:
-        label = det['label']
-        # 0.0~1.0 정규화 좌표 -> 픽셀 좌표 변환
-        ymin, xmin, ymax, xmax = det['bbox']
-        x1, y1, x2, y2 = int(xmin*w), int(ymin*h), int(xmax*w), int(ymax*h)
-        area = (y2 - y1) * (x2 - x1)
-
-        # Logic A: 장애물 (우선순위 1)
-        if label in OBSTACLE_CLASSES:
-            if area > (w * h * COLLISION_AREA_THRESHOLD):
-                priority_found = True
-                target_box = [x1, y1, x2, y2]
-                isDetected = 1
-                break # 장애물 발견 시 즉시 확정
-
-        # Logic B: 사람 (우선순위 2 - 장애물 없을 때)
-        if not priority_found and label == 'person':
-            if area > max_area:
-                max_area = area
-                target_box = [x1, y1, x2, y2]
-                isDetected = 1
-    return isDetected, target_box
-
-def getObjInRoad(bbox, lines, frame_shape):
-    isObjInRoad = 0
-    if len(lines) < 2:
-        return isObjInRoad
-
-    h, w = frame_shape[:2]
-    x1, y1, x2, y2 = bbox
-
-    cx = (x1 + x2) / 2.0
-    cy = float(y2)
-
-    xs = []
-    for (a, b, c) in lines:
-        if abs(a) < 1e-6:
-            continue
-        x_on_line = -(b * cy + c) / a
-        xs.append(x_on_line)
-
-    if len(xs) < 2:
-        return isObjInRoad
-
-    xs.sort()
-    left_x = xs[0]
-    right_x = xs[-1]
-
-    if left_x <= cx <= right_x:
-        isObjInRoad = 1
-    else:
-        isObjInRoad = 0
-
-    return isObjInRoad
-
-def getObjInfo(frame):
-    """
-    프레임 -> 라인 추출 -> 객체(사람) 인식 & 도로 위 판별
-    """
-    h, w = frame.shape[:2]
-    red_mask = get_red_mask(frame)  # 빨간색 마스크 추출
-    lines = fit_red_lines(red_mask) # 직선 방정식 추출  
-
-    # 2. 사람 감지
-    isObjDetected, bbox = getObjDetected(frame)   
-
-    # 3. 도로 위 판별
-    isObjInRoad = 0
-    if isObjDetected and bbox is not None:
-        isObjInRoad = getObjInRoad(bbox, lines, (h, w))
-    
-    # print("=====================================")
-    # print("isObjDetected: ", isObjDetected)
-    # print("=====================================")
-
-    return isObjDetected, isObjInRoad
-
-#=======================================================================
-# getObjInRoad 보조 함수들
-#=======================================================================
+# --------------------------------------------------------------------------
+# [보조 함수] OpenCV 로직
+# --------------------------------------------------------------------------
 def get_red_mask(frame):
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV) 
     lower1, upper1 = np.array([0, 100, 100]), np.array([10, 255, 255])
     lower2, upper2 = np.array([170, 100, 100]), np.array([180, 255, 255])
     mask = cv2.bitwise_or(cv2.inRange(hsv, lower1, upper1), cv2.inRange(hsv, lower2, upper2))
@@ -302,3 +49,197 @@ def fit_red_lines(mask):
             lines.append((float(vy), float(-vx), float(vx*y0 - vy*x0)))
         except: pass
     return lines
+
+def check_obj_in_road(bbox, lines, frame_w, frame_h):
+    if len(lines) < 2: return False
+    ymin, xmin, ymax, xmax = bbox
+    x1, y1 = xmin * frame_w, ymin * frame_h
+    x2, y2 = xmax * frame_w, ymax * frame_h
+    cx = (x1 + x2) / 2.0
+    cy = float(y2)
+    xs = []
+    for (a, b, c) in lines:
+        if abs(a) < 1e-6: continue
+        x_on_line = -(b * cy + c) / a
+        xs.append(x_on_line)
+    if len(xs) < 2: return False
+    xs.sort()
+    if xs[0] <= cx <= xs[-1]:
+        return True
+    return False
+
+# --------------------------------------------------------------------------
+# [메인] GStreamer 콜백 함수 (로직만 수행, 그리기 X)
+# --------------------------------------------------------------------------
+def app_callback(pad, info, user_data):
+    buffer = info.get_buffer()
+    if buffer is None: return Gst.PadProbeReturn.OK
+
+    # [중요] READ 전용으로 맵핑 (에러 원인 제거됨)
+    success, map_info = buffer.map(Gst.MapFlags.READ)
+    if not success: return Gst.PadProbeReturn.OK
+    
+    # 원본 메모리 참조
+    frame = np.ndarray(
+        shape=(640, 640, 3),
+        dtype=np.uint8,
+        buffer=map_info.data
+    )
+    
+    # ---------------- [A. ArUco 인식] ----------------
+    corners, ids, _ = cv2.aruco.detectMarkers(frame, aruco_dict, parameters=aruco_params)
+    current_zone = -1
+    if ids is not None:
+        for marker_id in ids.flatten():
+            if marker_id in ZONE_MAP:
+                current_zone = marker_id
+                break
+    
+    if current_zone != -1:
+        globalVar.zoneInfo = current_zone
+
+    # ---------------- [B. Hailo 객체 인식] ----------------
+    roi = hailo.get_roi_from_buffer(buffer)
+    detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
+    
+    detected = False
+    bbox = None
+    priority_found = False
+    max_area = 0
+
+    for det in detections:
+        label = det.get_label()
+        b = det.get_bbox()
+        area = (b.ymax() - b.ymin()) * (b.xmax() - b.xmin())
+        
+        if label in OBSTACLE_CLASSES:
+            if area > COLLISION_AREA_THRESHOLD:
+                detected = True
+                priority_found = True
+                bbox = [b.ymin(), b.xmin(), b.ymax(), b.xmax()]
+                break 
+        
+        if not priority_found and label == 'person':
+            if area > max_area:
+                max_area = area
+                detected = True
+                bbox = [b.ymin(), b.xmin(), b.ymax(), b.xmax()]
+
+    globalVar.isObjDetected = detected
+    
+    # ---------------- [C. 도로 위 판별] ----------------
+    in_road = False
+    if detected and bbox is not None:
+        red_mask = get_red_mask(frame)
+        lines = fit_red_lines(red_mask)
+        in_road = check_obj_in_road(bbox, lines, 640, 640)
+        
+    globalVar.isObjInRoad = in_road
+
+    # 맵핑 해제
+    buffer.unmap(map_info)
+    
+    return Gst.PadProbeReturn.OK
+
+# --------------------------------------------------------------------------
+# 파이프라인 구성
+# --------------------------------------------------------------------------
+def get_pipeline_string():
+    hef_path = "/usr/local/hailo/resources/models/hailo8/yolov8m.hef"
+    post_process_so = "/usr/local/hailo/resources/so/libyolo_hailortpp_postprocess.so"
+    
+    pipeline = (
+        "libcamerasrc ! video/x-raw, format=RGB, width=640, height=480 ! "
+        "videoconvert ! "
+        "videoscale ! video/x-raw, format=RGB, width=640, height=640 ! "
+        "queue name=inference_input_q max-size-buffers=3 ! "
+        "hailonet hef-path=" + hef_path + " batch-size=1 ! "
+        "queue name=inference_output_q max-size-buffers=3 ! "
+        "hailofilter so-path=" + post_process_so + " function-name=filter_letterbox qos=false ! "
+        "queue name=hailo_post_q ! " 
+        "hailooverlay ! "
+        "videoconvert ! "
+        "video/x-raw, format=RGB ! " 
+        "queue name=draw_q ! "      
+        "videoconvert ! "          
+        "fpsdisplaysink video-sink=autovideosink text-overlay=false sync=false" 
+    )
+    return pipeline
+
+# --------------------------------------------------------------------------
+# [Task] 실행 함수
+# --------------------------------------------------------------------------
+def getObjInfoTask(stop_event, args):
+    print("Starting GStreamer Integrated Task...")
+    Gst.init(None)
+    pipeline_string = get_pipeline_string()
+    
+    try:
+        pipeline = Gst.parse_launch(pipeline_string)
+    except Exception as e:
+        print(f"GStreamer Error: {e}")
+        return
+
+    # draw_q에 프로브를 연결
+    target_element = pipeline.get_by_name("draw_q")
+    if target_element:
+        pad = target_element.get_static_pad("src")
+        pad.add_probe(Gst.PadProbeType.BUFFER, app_callback, None)
+    else:
+        print("Error: Could not find pipeline element 'draw_q'")
+
+    pipeline.set_state(Gst.State.PLAYING)
+    loop = GLib.MainLoop()
+    
+    try:
+        while not stop_event.is_set():
+            GLib.MainContext.default().iteration(False)
+            sleep(0.01) 
+    except Exception as e:
+        print(e)
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+
+def getCurZoneTask(stop_event, args):
+    while not stop_event.is_set():
+        sleep(1)
+
+def mainTask(stop_event, args):
+    while not stop_event.is_set():
+        # 1. 센서 정보 읽기
+        zone = globalVar.zoneInfo
+        detected = globalVar.isObjDetected
+        inRoad = globalVar.isObjInRoad
+        
+        # 2. 사용자 요청 속도 가져오기
+        target_speed = globalVar.userTargetSpeed
+        
+        # 3. Zone별 제한 속도 설정
+        speed_limit = 100 # 기본 제한 없음 
+        
+        if zone == zoneID['CHILD']: 
+            speed_limit = vel_ChildZone #30     
+        elif zone == zoneID['HIGHACCIDENT']:
+            speed_limit = vel_HighAccidentZone #50
+        elif zone == zoneID['SPEEDBUMP']:
+            speed_limit = vel_SpeedBump       #20
+        
+        if target_speed > speed_limit:
+            final_speed = speed_limit
+        else:
+            final_speed = target_speed
+
+        # 5. 장애물 감지 시 최우선 정지
+        if detected:
+            if inRoad:
+                final_speed = 0
+                print(f"[STOP] Obstacle in Road!, speed set to 0.")
+            else:
+                # 도로 밖 장애물은 서행 (예: 10)
+                final_speed = min(final_speed, vel_ObjInRoad)
+                print(f"[WARN] Obstacle nearby. Slowing down., speed set to {final_speed}.")
+
+        # 6. 결과 업데이트
+        globalVar.desiredSpeed = final_speed
+        lonControl(final_speed)
+        sleep(0.1)
