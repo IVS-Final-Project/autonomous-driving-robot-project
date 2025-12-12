@@ -4,7 +4,7 @@ import sys
 import termios
 import tty
 import globalVar
-from taskManager2 import getObjInfoTask, mainTask
+from taskManager import getObjInfoTask, mainTask
 from motorControl import lonControl, latControl
 
 # 키보드 설정값
